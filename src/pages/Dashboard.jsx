@@ -1,227 +1,185 @@
-import { useState, useEffect } from "react";
-import { db } from "../lib/firebase";
-import {
-  collection,
-  addDoc,
-  query,
-  onSnapshot,
-  doc,
-  updateDoc,
-} from "firebase/firestore";
-import { Phone, CheckCircle, XCircle, Globe, Plus, Search } from "lucide-react";
+import { useState, useEffect, useMemo } from "react";
+import { Plus, Globe, Menu } from "lucide-react";
 import Sidebar from "../components/Sidebar";
+import StatBox from "../components/dashboard/StatBox";
+import LeadRow from "../components/dashboard/LeadRow";
+import LeadModal from "../components/dashboard/LeadModal";
+import { supabase } from "../lib/supabase";
 
 export default function Dashboard() {
   const [leads, setLeads] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [newLead, setNewLead] = useState({
-    name: "",
-    phone: "",
-    industry: "Poultry",
-  });
-  const [showModal, setShowModal] = useState(false);
+  const [countryFilter, setCountryFilter] = useState("Zimbabwe");
+  const [search, setSearch] = useState("");
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  // Real-time listener for leads
+  // Modal State
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingLead, setEditingLead] = useState(null);
+
   useEffect(() => {
-    const q = query(collection(db, "leads"));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      let leadsData = [];
-      snapshot.forEach((doc) => {
-        leadsData.push({ ...doc.data(), id: doc.id });
-      });
-      // Sort: Newest first
-      setLeads(leadsData.sort((a, b) => b.createdAt - a.createdAt));
-      setLoading(false);
-    });
-    return () => unsubscribe();
+    fetchLeads();
+    const channel = supabase
+      .channel("db-changes")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "leads" },
+        () => fetchLeads(),
+      )
+      .subscribe();
+    return () => supabase.removeChannel(channel);
   }, []);
 
-  // Function to add a lead (Manual Scraper Style)
-  const handleAddLead = async (e) => {
-    e.preventDefault();
-    if (!newLead.name || !newLead.phone) return;
+  async function fetchLeads() {
+    // 1. Get data sorted by date first
+    const { data, error } = await supabase
+      .from("leads")
+      .select("*")
+      .order("created_at", { ascending: false });
 
-    await addDoc(collection(db, "leads"), {
-      ...newLead,
-      status: "new", // new, contacted, warm, closed
-      createdAt: new Date(),
-      country: "Zimbabwe", // Default to Zim for now
-    });
-    setNewLead({ name: "", phone: "", industry: "Poultry" });
-    setShowModal(false);
+    if (data) {
+      // 2. Custom Sort: Force 'revamped' to the top
+      const sortedData = data.sort((a, b) => {
+        if (a.status === "revamped" && b.status !== "revamped") return -1;
+        if (a.status !== "revamped" && b.status === "revamped") return 1;
+        return 0; // Keep original date sorting for the rest
+      });
+      setLeads(sortedData);
+    }
+  }
+
+  // --- Stats & Filtering ---
+  const stats = useMemo(() => {
+    const total = leads.length;
+    const contacted = leads.filter((l) => l.status === "contacted").length;
+    // Count 'revamped' as closed/success for stats if you want, or keep separate
+    const closed = leads.filter(
+      (l) => l.status === "closed" || l.status === "revamped",
+    ).length;
+    return { total, contacted, closed };
+  }, [leads]);
+
+  const filteredLeads = leads.filter((l) => {
+    const matchesCountry = l.country === countryFilter;
+    const matchesSearch =
+      l.business_name?.toLowerCase().includes(search.toLowerCase()) ||
+      l.industry?.toLowerCase().includes(search.toLowerCase());
+    return matchesCountry && matchesSearch;
+  });
+
+  const handleOpenAdd = () => {
+    setEditingLead(null);
+    setIsModalOpen(true);
   };
-
-  // Function to mark status
-  const updateStatus = async (id, status) => {
-    const leadRef = doc(db, "leads", id);
-    await updateDoc(leadRef, { status: status });
+  const handleOpenEdit = (lead) => {
+    setEditingLead(lead);
+    setIsModalOpen(true);
   };
 
   return (
-    <div className="flex h-screen bg-gray-100">
-      <Sidebar />
+    <div className="flex h-screen bg-[#F9DD9C] text-[#870903] font-mono overflow-hidden">
+      <Sidebar mobileOpen={mobileMenuOpen} setMobileOpen={setMobileMenuOpen} />
 
-      <main className="flex-1 p-8 overflow-y-auto">
-        {/* Header */}
-        <div className="flex justify-between items-center mb-8">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-800">Sales Pipeline</h1>
-            <p className="text-gray-500">Manual Outreach Tracker</p>
-          </div>
-          <button
-            onClick={() => setShowModal(true)}
-            className="bg-black text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-gray-800 transition"
-          >
-            <Plus size={20} /> Add Lead
-          </button>
-        </div>
+      <main className="flex-1 overflow-y-auto bg-[#F9DD9C] relative">
+        <div className="p-6 md:p-10 pb-24">
+          {/* HEADER */}
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-end mb-10 border-b-4 border-[#870903] pb-6 gap-6">
+            <div className="flex items-center gap-4 w-full md:w-auto">
+              <button
+                className="md:hidden p-2 border-4 border-[#870903] text-[#870903] bg-white active:bg-[#870903] active:text-[#F9DD9C]"
+                onClick={() => setMobileMenuOpen(true)}
+              >
+                <Menu size={24} strokeWidth={3} />
+              </button>
+              <div>
+                <h1 className="text-3xl md:text-5xl font-black text-[#870903] uppercase tracking-tighter leading-none">
+                  TARGET LIST
+                </h1>
+                <p className="text-[#1A4734] font-bold text-xs md:text-sm mt-2 uppercase tracking-widest bg-[#418B24]/20 inline-block px-2">
+                  Sector: {countryFilter}
+                </p>
+              </div>
+            </div>
 
-        {/* Stats Row */}
-        <div className="grid grid-cols-3 gap-4 mb-8">
-          <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
-            <h3 className="text-gray-500 text-sm">Leads Today</h3>
-            <p className="text-3xl font-bold text-black">{leads.length}</p>
+            <div className="flex gap-4 w-full md:w-auto">
+              <button
+                onClick={() =>
+                  setCountryFilter(
+                    countryFilter === "Zimbabwe" ? "Canada" : "Zimbabwe",
+                  )
+                }
+                className="h-12 px-6 bg-white border-4 border-[#1A4734] text-[#1A4734] font-black uppercase hover:bg-[#1A4734] hover:text-[#F9DD9C] transition-all shadow-[4px_4px_0px_0px_#1A4734] active:translate-y-1 active:shadow-none flex items-center justify-center gap-2 flex-1 md:flex-none"
+              >
+                <Globe size={20} strokeWidth={3} /> {countryFilter}
+              </button>
+              <button
+                onClick={handleOpenAdd}
+                className="h-12 px-6 bg-[#E90C00] text-white border-4 border-[#870903] font-black uppercase hover:bg-[#870903] transition-all shadow-[4px_4px_0px_0px_#870903] active:translate-y-1 active:shadow-none flex items-center justify-center gap-2 flex-1 md:flex-none"
+              >
+                <Plus size={20} strokeWidth={3} /> New Target
+              </button>
+            </div>
           </div>
-          <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
-            <h3 className="text-gray-500 text-sm">Contacted</h3>
-            <p className="text-3xl font-bold text-blue-600">
-              {leads.filter((l) => l.status === "contacted").length}
-            </p>
-          </div>
-          <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
-            <h3 className="text-gray-500 text-sm">Closed ($)</h3>
-            <p className="text-3xl font-bold text-green-600">
-              {leads.filter((l) => l.status === "closed").length}
-            </p>
-          </div>
-        </div>
 
-        {/* Leads Table */}
-        <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-          <table className="w-full text-left">
-            <thead className="bg-gray-50 border-b border-gray-200">
-              <tr>
-                <th className="p-4 text-xs font-semibold text-gray-500 uppercase">
-                  Business
-                </th>
-                <th className="p-4 text-xs font-semibold text-gray-500 uppercase">
-                  Industry
-                </th>
-                <th className="p-4 text-xs font-semibold text-gray-500 uppercase">
-                  Action
-                </th>
-                <th className="p-4 text-xs font-semibold text-gray-500 uppercase">
-                  Status
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {leads.map((lead) => (
-                <tr key={lead.id} className="hover:bg-gray-50 transition">
-                  <td className="p-4 font-medium text-gray-900">{lead.name}</td>
-                  <td className="p-4 text-gray-500">{lead.industry}</td>
-                  <td className="p-4">
-                    {/* THE MONEY BUTTON */}
-                    <a
-                      href={`https://wa.me/${lead.phone.replace(
-                        /[^0-9]/g,
-                        ""
-                      )}`}
-                      target="_blank"
-                      onClick={() => updateStatus(lead.id, "contacted")}
-                      className="inline-flex items-center gap-2 bg-green-500 text-white px-3 py-1.5 rounded-md text-sm font-medium hover:bg-green-600"
-                    >
-                      <Phone size={16} /> WhatsApp
-                    </a>
-                  </td>
-                  <td className="p-4">
-                    <select
-                      value={lead.status}
-                      onChange={(e) => updateStatus(lead.id, e.target.value)}
-                      className={`text-xs font-bold uppercase px-2 py-1 rounded border-none outline-none cursor-pointer
-                        ${
-                          lead.status === "new"
-                            ? "bg-gray-100 text-gray-600"
-                            : ""
-                        }
-                        ${
-                          lead.status === "contacted"
-                            ? "bg-blue-100 text-blue-600"
-                            : ""
-                        }
-                        ${
-                          lead.status === "closed"
-                            ? "bg-green-100 text-green-600"
-                            : ""
-                        }
-                      `}
-                    >
-                      <option value="new">New</option>
-                      <option value="contacted">Contacted</option>
-                      <option value="warm">Warm</option>
-                      <option value="closed">Closed</option>
-                    </select>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          {/* STATS */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6 mb-10">
+            <StatBox
+              label="DETECTED"
+              value={stats.total}
+              color="text-[#870903]"
+              border="border-[#870903]"
+            />
+            <StatBox
+              label="ENGAGED"
+              value={stats.contacted}
+              color="text-[#1A4734]"
+              border="border-[#1A4734]"
+            />
+            <StatBox
+              label="CLOSED"
+              value={stats.closed}
+              color="text-[#E90C00]"
+              border="border-[#E90C00]"
+            />
+          </div>
+
+          {/* SEARCH */}
+          <div className="mb-6">
+            <input
+              placeholder="SEARCH DATABASE..."
+              className="w-full bg-white border-4 border-[#870903] p-4 font-bold text-[#870903] placeholder-[#870903]/50 focus:outline-none focus:bg-[#FFF8E7] shadow-[4px_4px_0px_0px_#870903]"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+
+          {/* LIST */}
+          <div className="flex flex-col gap-4">
+            {filteredLeads.map((lead) => (
+              <LeadRow
+                key={lead.id}
+                lead={lead}
+                onEdit={() => handleOpenEdit(lead)}
+                refreshData={fetchLeads}
+              />
+            ))}
+            {filteredLeads.length === 0 && (
+              <div className="text-center py-20 border-4 border-dashed border-[#870903]/30 font-bold text-[#870903]/50 uppercase">
+                No targets found.
+              </div>
+            )}
+          </div>
         </div>
       </main>
 
-      {/* Simple Add Lead Modal */}
-      {showModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl p-6 w-full max-w-md">
-            <h2 className="text-xl font-bold mb-4">Add New Lead</h2>
-            <form onSubmit={handleAddLead} className="space-y-4">
-              <input
-                placeholder="Business Name (e.g. Tension Corner)"
-                className="w-full p-2 border rounded"
-                value={newLead.name}
-                onChange={(e) =>
-                  setNewLead({ ...newLead, name: e.target.value })
-                }
-              />
-              <input
-                placeholder="Phone (e.g. 26377...)"
-                className="w-full p-2 border rounded"
-                value={newLead.phone}
-                onChange={(e) =>
-                  setNewLead({ ...newLead, phone: e.target.value })
-                }
-              />
-              <select
-                className="w-full p-2 border rounded"
-                value={newLead.industry}
-                onChange={(e) =>
-                  setNewLead({ ...newLead, industry: e.target.value })
-                }
-              >
-                <option value="Poultry">Poultry</option>
-                <option value="Construction">Construction</option>
-                <option value="Finance">Finance</option>
-                <option value="Tourism">Tourism</option>
-              </select>
-              <div className="flex gap-2 justify-end">
-                <button
-                  type="button"
-                  onClick={() => setShowModal(false)}
-                  className="px-4 py-2 text-gray-500"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 bg-black text-white rounded"
-                >
-                  Save Lead
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      {/* MODAL */}
+      <LeadModal
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        editingId={editingLead?.id}
+        initialData={editingLead}
+        countryFilter={countryFilter}
+        refreshData={fetchLeads}
+      />
     </div>
   );
 }
